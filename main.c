@@ -642,7 +642,7 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	//	print_payload(payload, size_payload);
 	//}
 
-return;
+	return;
 }
 
 int main(int argc, char **argv)
@@ -712,6 +712,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Couldn't open device %s: %s\n", dev, errbuf);
 		exit(EXIT_FAILURE);
 	}
+	// set non blocking for polling
+	pcap_setnonblock(handle, true, errbuf);
 
 	/* make sure we're capturing on an Ethernet device [2] */
 	if (pcap_datalink(handle) != DLT_EN10MB) {
@@ -733,9 +735,18 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	/* now we can set our callback function */
-	pcap_loop(handle, num_packets, got_packet, NULL);
-
+	// get pcap fd
+	int fd_no = pcap_fileno(handle);
+	fd_set rfds;
+	while (true)
+	{
+		printf("preselect\n");
+		int ret = select(fd_no+1, &rfds, NULL, NULL, NULL);
+		printf("postselect\n");
+		/* now we can set our callback function */
+		pcap_dispatch(handle, 1, got_packet, NULL);
+		//pcap_loop(handle, num_packets, got_packet, NULL);
+	}
 	/* cleanup */
 	pcap_freecode(&fp);
 	pcap_close(handle);
