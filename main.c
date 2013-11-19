@@ -551,27 +551,49 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
     // Get the state and save it
 	printf("      State: %i ", up);
 
+	// new state tmp container
+	int new_state = 0;
+
 	if (sess->state == ST_CONNECTED || sess->state == ST_SENDING || sess->state == ST_RECEIVING)
 	{
 		if (up)
 		{
-			sess->state = ST_SENDING;
+			new_state = ST_SENDING;
 		}
 		else
 		{
-			sess->state = ST_RECEIVING;
+			new_state = ST_RECEIVING;
 		}
 	}
-
-	if ((tcp->th_flags & TH_FIN) == TH_FIN)
+	if ((tcp->th_flags & TH_FIN) == TH_FIN && sess->state != ST_TERMINATE_REQ)
 	{
-		sess->state = ST_TERMINATE_REQ;
+		new_state = ST_TERMINATE_REQ;
 		printf(" FIN");
 	}
-	if ((tcp->th_flags & TH_SYN ) == TH_SYN )
+	if ((tcp->th_flags & TH_SYN ) == TH_SYN && sess->state != ST_CONNECT_REQ)
 	{
-		sess->state = ST_CONNECT_REQ;
+		new_state = ST_CONNECT_REQ;
 		printf(" SYN");
+	}
+	if ((tcp->th_flags & TH_ACK) == TH_ACK)
+	{
+		if (sess->state == ST_TERMINATE_REQ )
+		{
+			new_state = ST_TERMINATE_ACK;
+		}
+		else if (sess->state == ST_CONNECT_REQ )
+		{
+			new_state = ST_CONNECT_ACK;
+		}
+		else if (sess->state == ST_CONNECT_ACK)
+		{
+			new_state = ST_CONNECTED;
+		}
+		else if (sess->state == ST_TERMINATE_ACK)
+		{
+			new_state = ST_TERMINATED;
+		}
+		printf(" ACK");
 	}
 	if ((tcp->th_flags & TH_RST) == TH_RST)
 	{
@@ -581,26 +603,6 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 	if ((tcp->th_flags & TH_PUSH) == TH_PUSH)
 	{
 		printf(" PUSH");
-	}
-	if ((tcp->th_flags & TH_ACK) == TH_ACK)
-	{
-		if (sess->state == ST_TERMINATE_REQ )
-		{
-			sess->state = ST_TERMINATE_ACK;
-		}
-		else if (sess->state == ST_CONNECT_REQ )
-		{
-			sess->state = ST_CONNECT_ACK;
-		}
-		else if (sess->state == ST_CONNECT_ACK)
-		{
-			sess->state = ST_CONNECTED;
-		}
-		else if (sess->state == ST_TERMINATE_ACK)
-		{
-			sess->state = ST_TERMINATED;
-		}
-		printf(" ACK");
 	}
 	if ((tcp->th_flags & TH_URG) == TH_URG)
 	{
@@ -615,6 +617,10 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 		printf(" CWR");
 	}
 	printf(" %u\n", tcp->th_flags );
+
+	if (new_state)
+		sess->state = new_state;
+
 	/* define/compute tcp payload (segment) offset */
 	payload = (u_char *)(packet + SIZE_ETHERNET + size_ip + size_tcp);
 
@@ -624,7 +630,7 @@ got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 
     //iteration example
 	for(sess=tcpsess; sess != NULL; sess=sess->hh.next) {
-	        printf("id name: %s note: %i, state: %i\n", sess->name, sess->note, sess->state);
+		printf("id name: %s note: %i, state: %i\n", sess->name, sess->note, sess->state);
 	}
 
 	/*
