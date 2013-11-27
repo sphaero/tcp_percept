@@ -39,8 +39,7 @@ challenging to interpret if listening to too much traffic at once. The chords ar
 
 h2. Installation
 
-The system is build in "PureData":http://puredata.info and using a custom external which wraps "Libpcap":http://www.tcpdump.org/. It's only tested on Linux. The external is currently hardcoded to the 
-"wlan0" network device. To set a different device you'll need to change the following line in pd-tcp-percept.c:
+The system is build in "PureData":http://puredata.info and using a custom external which wraps "Libpcap":http://www.tcpdump.org/. It's only tested on Linux. The external is currently hardcoded to the 'wlan0' network device. To set a different device you'll need to change the following line in pd-tcp-percept.c:
 
 <pre>
 	x->dev = "wlan0";		/* capture device name */
