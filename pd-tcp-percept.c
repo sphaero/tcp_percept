@@ -86,6 +86,7 @@ struct tcp_sess {
     char name[27];   // key: name is "sport:dip:dport"
     int state;		 // see state table
     int note;		 // a midi note in the range 0-127
+    //int length;      // size of the last packet
     UT_hash_handle hh; /* makes this structure hashable */
 };
 /*
@@ -118,15 +119,12 @@ static t_class *tcp_percept_class;
 typedef struct _tcp_percept
 {
     t_object x_obj;
-    t_outlet *x_msgout;
-    t_outlet *x_connectout;
-    int x_nconnections;
-    int x_udp;
-    int x_bin;
-    int pcapfd;
-    struct bpf_program fp;
-    int *x_connections;
-    int x_old;
+    t_outlet *x_msg_out;	// a list with; the number we assigned to the tcp session,
+    //t_outlet *x_state;  	// the state of this session (see session table)
+    //t_outlet *x_length;   // & the length of the last packet we got
+    int pcapfd;				/* pcap file descriptor */
+    char *filter_exp;		/* filter expression */
+    struct bpf_program fp;  /* filter program */
     char *dev; 				/* capture device name */
     char my_ipaddress[15];  /* device ipaddress */
     pcap_t *handle;			/* packet capture handle */
@@ -134,25 +132,7 @@ typedef struct _tcp_percept
 
 //initialise tcp session table
 struct tcp_sess *sess_table = NULL;
-
-//static void tcp_percept_notify(t_tcp_percept *x, int fd)
-//{
-//    int i;
-//    for (i = 0; i < x->x_nconnections; i++)
-//    {
-//        if (x->x_connections[i] == fd)
-//        {
-//            memmove(x->x_connections+i, x->x_connections+(i+1),
-//                sizeof(int) * (x->x_nconnections - (i+1)));
-//            x->x_connections = (int *)t_resizebytes(x->x_connections,
-//                x->x_nconnections * sizeof(int),
-//                    (x->x_nconnections-1) * sizeof(int));
-//            x->x_nconnections--;
-//        }
-//    }
-//    outlet_float(x->x_connectout, x->x_nconnections);
-//}
-
+static int idcounter = 20;
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 {
 	t_tcp_percept *x = (t_tcp_percept*)args;
@@ -191,8 +171,8 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		return;
 	}
 	/* print source and destination IP addresses & ports */
-	post("       From: %s:%d\n", inet_ntoa(ip->ip_src), ntohs(tcp->th_sport));
-	post("         To: %s:%d\n", inet_ntoa(ip->ip_dst), ntohs(tcp->th_dport));
+	printf("       From: %s:%d\n", inet_ntoa(ip->ip_src), ntohs(tcp->th_sport));
+	printf("         To: %s:%d\n", inet_ntoa(ip->ip_dst), ntohs(tcp->th_dport));
 
 	char tname[27];  // container for our connection identifier
 	bool up = false; // up or down direction
@@ -201,7 +181,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	{
 		// upstream connection
 		sprintf(tname, "%d:%s:%d", ntohs(tcp->th_sport), inet_ntoa(ip->ip_dst), ntohs(tcp->th_dport) );
-		printf("\tUp %s\n", tname);
+		post("\tUp %s", tname);
 		up = true;
 	}
 	else
@@ -211,12 +191,12 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		{
 			// downstream connection
 			sprintf(tname, "%d:%s:%d", ntohs(tcp->th_dport), inet_ntoa(ip->ip_src), ntohs(tcp->th_sport) );
-			printf("\tDown %s\n", tname);
+			post("\tDown %s", tname);
 			up = false;
 		}
 		else
 		{
-			printf("ERROR: neither ip_src or ip_dst matches our ip\n");
+			post("ERROR: neither ip_src or ip_dst matches our ip\n");
 			return;
 		}
 	}
@@ -228,14 +208,14 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	{
 		sess = (struct tcp_sess*)malloc(sizeof(struct tcp_sess));
 		strcpy(sess->name, tname);
-		int n = 100;
-		sess->note = n;
+		int n = 1;
+		sess->note = idcounter++;
 		HASH_ADD_STR( sess_table, name, sess );
 	}
-	else
+	/*else
 	{
 		sess->note++;
-	}
+	}*/
 	// Get the state and save it
 	printf("      State: %i ", up);
 
@@ -316,6 +296,13 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	// Use this to set volume or velocity
 	size_payload = ntohs(ip->ip_len) - (size_ip + size_tcp);
 
+	t_atom *ap = (t_atom *)alloca(3 * sizeof(t_atom));
+	SETFLOAT(ap, sess->note);
+	SETFLOAT(ap+1, sess->state);
+	SETFLOAT(ap+2, size_payload);//sess->length);
+	//        for (i = 0; i < ret; i++)
+	//            SETFLOAT(ap+i, inbuf[i]);
+	outlet_list(x->x_msg_out, 0, 3, ap);
 	//iteration example
 	//for(sess=tcpsess; sess != NULL; sess=sess->hh.next) {
 	//	printf("id name: %s note: %i, state: %i\n", sess->name, sess->note, sess->state);
@@ -333,126 +320,23 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	return;
 }
 
-static void tcp_percept_readbin(t_tcp_percept *x, int fd)
+static void tcp_percept_get_packet(t_tcp_percept *x, int fd)
 {
 	pcap_dispatch(x->handle, fd, got_packet, (u_char*)x);
-
-//    unsigned char inbuf[MAXPDSTRING];
-//    int ret = recv(fd, inbuf, MAXPDSTRING, 0), i;
-//    if (!x->x_msgout)
-//    {
-//        bug("tcp_percept_readbin");
-//        return;
-//    }
-//    if (ret <= 0)
-//    {
-//        if (ret < 0)
-//            sys_sockerror("recv");
-//        sys_rmpollfn(fd);
-//        sys_closesocket(fd);
-//        tcp_percept_notify(x, fd);
-//    }
-//    else if (x->x_udp)
-//    {
-//        t_atom *ap = (t_atom *)alloca(ret * sizeof(t_atom));
-//        for (i = 0; i < ret; i++)
-//            SETFLOAT(ap+i, inbuf[i]);
-//        outlet_list(x->x_msgout, 0, ret, ap);
-//    }
-//    else
-//    {
-//        for (i = 0; i < ret; i++)
-//            outlet_float(x->x_msgout, inbuf[i]);
-//    }
 }
 
-//static void tcp_percept_doit(void *z, t_binbuf *b)
-//{
-//    t_atom messbuf[1024];
-//    t_tcp_percept *x = (t_tcp_percept *)z;
-//    int msg, natom = binbuf_getnatom(b);
-//    t_atom *at = binbuf_getvec(b);
-//    for (msg = 0; msg < natom;)
-//    {
-//        int emsg;
-//        for (emsg = msg; emsg < natom && at[emsg].a_type != A_COMMA
-//            && at[emsg].a_type != A_SEMI; emsg++)
-//                ;
-//        if (emsg > msg)
-//        {
-//            int i;
-//            for (i = msg; i < emsg; i++)
-//                if (at[i].a_type == A_DOLLAR || at[i].a_type == A_DOLLSYM)
-//            {
-//                pd_error(x, "tcp_percept: got dollar sign in message");
-//                goto nodice;
-//            }
-//            if (at[msg].a_type == A_FLOAT)
-//            {
-//                if (emsg > msg + 1)
-//                    outlet_list(x->x_msgout, 0, emsg-msg, at + msg);
-//                else outlet_float(x->x_msgout, at[msg].a_w.w_float);
-//            }
-//            else if (at[msg].a_type == A_SYMBOL)
-//                outlet_anything(x->x_msgout, at[msg].a_w.w_symbol,
-//                    emsg-msg-1, at + msg + 1);
-//        }
-//    nodice:
-//        msg = emsg + 1;
-//    }
-//}
 
-//static void tcp_percept_connectpoll(t_tcp_percept *x)
-//{
-//    int fd = accept(x->x_sockfd, 0, 0);
-//    if (fd < 0) post("tcp_percept: accept failed");
-//    else
-//    {
-//        int nconnections = x->x_nconnections+1;
-//
-//        x->x_connections = (int *)t_resizebytes(x->x_connections,
-//            x->x_nconnections * sizeof(int), nconnections * sizeof(int));
-//        x->x_connections[x->x_nconnections] = fd;
-//        if (x->x_bin)
-//            sys_addpollfn(fd, (t_fdpollfn)tcp_percept_readbin, x);
-//        else
-//        {
-//            t_socketreceiver *y = socketreceiver_new((void *)x,
-//            (t_socketnotifier)tcp_percept_notify,
-//                (x->x_msgout ? tcp_percept_doit : 0), 0);
-//            sys_addpollfn(fd, (t_fdpollfn)socketreceiver_read, y);
-//        }
-//        outlet_float(x->x_connectout, (x->x_nconnections = nconnections));
-//    }
-//}
-
-static void tcp_percept_closeall(t_tcp_percept *x)
+static void tcp_percept_cleanup(t_tcp_percept *x)
 {
 	pcap_freecode(&x->fp);
 	if (x->handle)
 		pcap_close(x->handle);
 	sys_rmpollfn(x->pcapfd);
-//    int i;
-//    for (i = 0; i < x->x_nconnections; i++)
-//    {
-//        sys_rmpollfn(x->x_connections[i]);
-//        sys_closesocket(x->x_connections[i]);
-//    }
-//    x->x_connections = (int *)t_resizebytes(x->x_connections,
-//        x->x_nconnections * sizeof(int), 0);
-//    x->x_nconnections = 0;
-//    if (x->x_sockfd >= 0)
-//    {
-//        sys_rmpollfn(x->x_sockfd);
-//        sys_closesocket(x->x_sockfd);
-//    }
-//    x->x_sockfd = -1;
 }
 
 static void tcp_percept_listen(t_tcp_percept *x)
 {
     char errbuf[PCAP_ERRBUF_SIZE];		/* error buffer */
-    char filter_exp[] = "tcp port 25"; 	/* filter expression [3] */
     struct bpf_program fp;				/* compiled filter program (expression) */
     bpf_u_int32 mask;					/* subnet mask */
     bpf_u_int32 net;					/* ip */
@@ -480,15 +364,15 @@ static void tcp_percept_listen(t_tcp_percept *x)
 			(struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));
 
 	/* print capture info */
-	post("Device: %s\n", x->dev);
-	post("Device IP: %s\n", x->my_ipaddress);
+	post("Device: %s", x->dev);
+	post("Device IP: %s", x->my_ipaddress);
 	//post("Number of packets: %d\n", num_packets);
-	post("Filter expression: %s\n", filter_exp);
+	post("Filter expression: %s", x->filter_exp);
 
 	x->handle = pcap_open_live(x->dev, SNAP_LEN, 1, 1000, errbuf);
 	if (x->handle == NULL) {
 		fprintf(stderr, "Couldn't open device %s: %s\n", x->dev, errbuf);
-		exit(EXIT_FAILURE);
+		return; //exit(EXIT_FAILURE);
 	}
 	// set non blocking for polling
 	pcap_setnonblock(x->handle, true, errbuf);
@@ -496,176 +380,77 @@ static void tcp_percept_listen(t_tcp_percept *x)
 	/* make sure we're capturing on an Ethernet device [2] */
 	if (pcap_datalink(x->handle) != DLT_EN10MB) {
 		fprintf(stderr, "%s is not an Ethernet\n", x->dev);
-		exit(EXIT_FAILURE);
+		return; //exit(EXIT_FAILURE);
 	}
 
 	/* compile the filter expression */
-	if (pcap_compile(x->handle, &fp, filter_exp, 0, net) == -1) {
-		fprintf(stderr, "Couldn't parse filter %s: %s\n",
-			filter_exp, pcap_geterr(x->handle));
-		exit(EXIT_FAILURE);
+	if (pcap_compile(x->handle, &fp, x->filter_exp, 0, net) == -1) {
+		post("Couldn't parse filter %s: %s\n",
+			x->filter_exp, pcap_geterr(x->handle));
+		return; //exit(EXIT_FAILURE);
 	}
 
 	/* apply the compiled filter */
 	if (pcap_setfilter(x->handle, &fp) == -1) {
 		fprintf(stderr, "Couldn't install filter %s: %s\n",
-			filter_exp, pcap_geterr(x->handle));
-		exit(EXIT_FAILURE);
+			x->filter_exp, pcap_geterr(x->handle));
+		return; //exit(EXIT_FAILURE);
 	}
 
 	// get pcap fd
 	x->pcapfd = pcap_fileno(x->handle);
 	fd_set rfds;
 
-	sys_addpollfn(x->pcapfd, (t_fdpollfn)tcp_percept_readbin, x);
-
-
-	////////OLD
-
-//	if (portno <= 0)
-//        return;
-//    x->x_sockfd = socket(AF_INET, (x->x_udp ? SOCK_DGRAM : SOCK_STREAM), 0);
-//    if (x->x_sockfd < 0)
-//    {
-//        sys_sockerror("socket");
-//        return;
-//    }
-//#if 0
-//    fprintf(stderr, "receive socket %d\n", x->x_ sockfd);
-//#endif
-//
-//#if 1
-//        /* ask OS to allow another Pd to repoen this port after we close it. */
-//    intarg = 1;
-//    if (setsockopt(x->x_sockfd, SOL_SOCKET, SO_REUSEADDR,
-//        (char *)&intarg, sizeof(intarg)) < 0)
-//            post("tcp_percept: setsockopt (SO_REUSEADDR) failed\n");
-//#endif
-//#if 0
-//    intarg = 0;
-//    if (setsockopt(x->x_sockfd, SOL_SOCKET, SO_RCVBUF,
-//        &intarg, sizeof(intarg)) < 0)
-//            post("setsockopt (SO_RCVBUF) failed\n");
-//#endif
-//    intarg = 1;
-//    if (setsockopt(x->x_sockfd, SOL_SOCKET, SO_BROADCAST,
-//        (const void *)&intarg, sizeof(intarg)) < 0)
-//            post("tcp_percept: failed to sett SO_BROADCAST");
-//        /* Stream (TCP) sockets are set NODELAY */
-//    if (!x->x_udp)
-//    {
-//        intarg = 1;
-//        if (setsockopt(x->x_sockfd, IPPROTO_TCP, TCP_NODELAY,
-//            (char *)&intarg, sizeof(intarg)) < 0)
-//                post("setsockopt (TCP_NODELAY) failed\n");
-//    }
-//        /* assign server port number etc */
-//    server.sin_family = AF_INET;
-//    server.sin_addr.s_addr = INADDR_ANY;
-//    server.sin_port = htons((u_short)portno);
-//
-//        /* name the socket */
-//    if (bind(x->x_sockfd, (struct sockaddr *)&server, sizeof(server)) < 0)
-//    {
-//        sys_sockerror("bind");
-//        sys_closesocket(x->x_sockfd);
-//        x->x_sockfd = -1;
-//        return;
-//    }
-//
-//    if (x->x_udp)        /* datagram protocol */
-//    {
-//        if (x->x_bin)
-//            sys_addpollfn(x->x_sockfd, (t_fdpollfn)tcp_percept_readbin, x);
-//        else
-//        {
-//            t_socketreceiver *y = socketreceiver_new((void *)x,
-//                (t_socketnotifier)tcp_percept_notify,
-//                    (x->x_msgout ? tcp_percept_doit : 0), 1);
-//            sys_addpollfn(x->x_sockfd, (t_fdpollfn)socketreceiver_read, y);
-//            x->x_connectout = 0;
-//        }
-//    }
-//    else        /* streaming protocol */
-//    {
-//        if (listen(x->x_sockfd, 5) < 0)
-//        {
-//            sys_sockerror("listen");
-//            sys_closesocket(x->x_sockfd);
-//            x->x_sockfd = -1;
-//        }
-//        else
-//        {
-//            sys_addpollfn(x->x_sockfd, (t_fdpollfn)tcp_percept_connectpoll, x);
-//            x->x_connectout = outlet_new(&x->x_obj, &s_float);
-//        }
-//    }
+	sys_addpollfn(x->pcapfd, (t_fdpollfn)tcp_percept_get_packet, x);
 }
 
 static void *tcp_percept_new(t_symbol *s, int argc, t_atom *argv)
 {
     t_tcp_percept *x = (t_tcp_percept *)pd_new(tcp_percept_class);
     x->dev = "wlan0";		/* capture device name */
+    x->filter_exp = "";
+
+    // get arguments
+    while (argc)
+	{
+    	// iterate over arguments to construct the filter
+    	// how do you read the string at once anyway :(
+		char *s;
+		if ( argv->a_type == A_FLOAT)
+		{
+			s = malloc(snprintf(NULL, 0, "%s %i", x->filter_exp, (int)argv->a_w.w_float) + 1);
+			// write data into the pointer
+			sprintf(s, "%s %i", x->filter_exp, (int)argv->a_w.w_float);
+		}
+		else if (argv->a_type == A_SYMBOL)
+		{
+			// declare a new pointer for the filter and assign mem
+			s = malloc(snprintf(NULL, 0, "%s %s", x->filter_exp, argv->a_w.w_symbol->s_name) + 1);
+			// write data into the pointer
+			sprintf(s, "%s %s", x->filter_exp, argv->a_w.w_symbol->s_name);
+		}
+		// save the pointer to our struct
+    	x->filter_exp = s;
+    	argc--; argv++;
+    }
+
+    // lets start the capture
     tcp_percept_listen(x);
-/*
-    int portno = 0;
-    x->x_udp = 0;
-    x->x_old = 0;
-    x->x_bin = 0;
-    x->x_nconnections = 0;
-    x->x_connections = (int *)t_getbytes(0);
-    x->x_sockfd = -1;
-    if (argc && argv->a_type == A_FLOAT)
-    {
-        portno = atom_getfloatarg(0, argc, argv);
-        x->x_udp = (atom_getfloatarg(1, argc, argv) != 0);
-        x->x_old = (!strcmp(atom_getsymbolarg(2, argc, argv)->s_name, "old"));
-        argc = 0;
-    }
-    else 
-    {
-        while (argc && argv->a_type == A_SYMBOL &&
-            *argv->a_w.w_symbol->s_name == '-')
-        {
-            if (!strcmp(argv->a_w.w_symbol->s_name, "-b"))
-                x->x_bin = 1;
-            else if (!strcmp(argv->a_w.w_symbol->s_name, "-u"))
-                x->x_udp = 1;
-            else
-            {
-                pd_error(x, "tcp_percept: unknown flag ...");
-                postatom(argc, argv); endpost();
-            }
-            argc--; argv++;
-        }
-    }
-    if (argc && argv->a_type == A_FLOAT)
-        portno = argv->a_w.w_float, argc--, argv++;
-    if (argc)
-    {
-        pd_error(x, "tcp_percept: extra arguments ignored:");
-        postatom(argc, argv); endpost();
-    }
-    if (x->x_old)
-    {
-         old style, nonsecure version
-        x->x_msgout = 0;
-    }
-    else x->x_msgout = outlet_new(&x->x_obj, &s_anything);
-         create a socket
-    if (portno > 0)
-        tcp_percept_listen(x, portno);
-*/
+    x->x_msg_out = outlet_new(&x->x_obj, &s_anything);
     return (x);
 }
 
 void tcp_percept_setup(void)
 {
     tcp_percept_class = class_new(gensym("tcp_percept"),
-        (t_newmethod)tcp_percept_new, (t_method)tcp_percept_closeall,
-        sizeof(t_tcp_percept), 0, A_GIMME, 0);
+        (t_newmethod)tcp_percept_new,   // constructor
+        (t_method)tcp_percept_cleanup,  // destructor
+        sizeof(t_tcp_percept),
+        CLASS_DEFAULT,
+        A_GIMME,
+        0); 							//terminator
     class_addmethod(tcp_percept_class, (t_method)tcp_percept_listen,
-        gensym("listen"), A_FLOAT, 0);
+        gensym("listen"), A_DEFFLOAT, 0);
 }
 
 /*void x_net_setup(void)
