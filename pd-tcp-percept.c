@@ -1,8 +1,6 @@
-/* Copyright (c) 1997-1999 Miller Puckette.
+/* Copyright (c) 2013 Arnaud Loonstra.
 * For information on usage and redistribution, and for a DISCLAIMER OF ALL
 * WARRANTIES, see the file, "LICENSE.txt," in this distribution.  */
-
-/* network */
 
 #include "m_pd.h"
 #include "s_stuff.h"
@@ -208,14 +206,9 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	{
 		sess = (struct tcp_sess*)malloc(sizeof(struct tcp_sess));
 		strcpy(sess->name, tname);
-		int n = 1;
 		sess->note = idcounter++;
 		HASH_ADD_STR( sess_table, name, sess );
 	}
-	/*else
-	{
-		sess->note++;
-	}*/
 	// Get the state and save it
 	printf("      State: %i ", up);
 
@@ -290,7 +283,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		sess->state = new_state;
 
 	/* define/compute tcp payload (segment) offset */
-	payload = (u_char *)(packet + SIZE_ETHERNET + size_ip + size_tcp);
+	payload = (char *)(packet + SIZE_ETHERNET + size_ip + size_tcp);
 
 	/* compute tcp payload (segment) size */
 	// Use this to set volume or velocity
@@ -356,7 +349,7 @@ static void tcp_percept_listen(t_tcp_percept *x)
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	/* I want to get an IPv4 IP address */
 	ifr.ifr_addr.sa_family = AF_INET;
-	/* I want IP address attached to dev */
+	/* I want the IP address attached to dev */
 	strncpy(ifr.ifr_name, x->dev, IFNAMSIZ-1);
 	ioctl(fd, SIOCGIFADDR, &ifr);
 	close(fd);
@@ -399,8 +392,6 @@ static void tcp_percept_listen(t_tcp_percept *x)
 
 	// get pcap fd
 	x->pcapfd = pcap_fileno(x->handle);
-	fd_set rfds;
-
 	sys_addpollfn(x->pcapfd, (t_fdpollfn)tcp_percept_get_packet, x);
 }
 
@@ -415,7 +406,7 @@ static void *tcp_percept_new(t_symbol *s, int argc, t_atom *argv)
 	{
     	// iterate over arguments to construct the filter
     	// how do you read the string at once anyway :(
-		char *s;
+		char *s = NULL;
 		if ( argv->a_type == A_FLOAT)
 		{
 			s = malloc(snprintf(NULL, 0, "%s %i", x->filter_exp, (int)argv->a_w.w_float) + 1);
@@ -453,9 +444,4 @@ void tcp_percept_setup(void)
         gensym("listen"), A_DEFFLOAT, 0);
 }
 
-/*void x_net_setup(void)
-{
-    netsend_setup();
-    tcp_percept_setup();
-}*/
 
