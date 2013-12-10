@@ -2,19 +2,20 @@ h1. TCP Percept libpcap external for PureData, Development insights
 
 I wanted to research creating externals for PureData. For this I've first investigated how an external is made in general. See "my other guide":http://www.sphaero.org/blog/ as a result of that. 
 
-While at first I wanted to create a "ZeroMQ":http://www.zeromq.org external for PureData I was set back because of not being able to get to operate within the PureData execution loop. (See note at the end.) So instead I tried getting more acquainted with PureData programming with using some other library than ZeroMQ. My practical use case was that I wanted to capture network traffic and process it in PureData. At first I had thought of running "tcpdump" in a seperate process and pass it's output through stdin/stdout pipes to PureData. However I thought this would not be very efficient and not really an external. 
+While at first I wanted to create a "ZeroMQ":http://www.zeromq.org external for PureData I was set back because of not being able to get to operate within the PureData execution loop. (See note at the end.) So instead I tried getting more acquainted with PureData programming with using some other library than ZeroMQ. While at first I thought I would like te see if I could network PureData instances together using ZeroMQ. It was a bit too ambitious (see note at the end). My other practical use case was that I wanted to capture network traffic and process it in PureData. At first I had thought of running "tcpdump" in a seperate process and pass it's output through stdin/out pipes to PureData. However I thought this would not be very efficient and not really an external a good example for an external.
 
 I started writing what I needed as a simple standalone C program. I was able to use libpcap's examples as a guide which introduced me to it's inner workings as well. From writing the C program I was able see I how I could hookup this logic into the PureData execution loop.
 
-I tried using the same code inside an external. This resulted in an addon which needed a 'metro' object to retrieve packets from libpcap. This wasn't very efficient and actually a bad practivce. It would work but not reliably. Best approach would be to notify PureData that packets had arrived in libpcap. I had this same question for the ZeroMQ addon and it had let me into reading lots of code and searching through forums and mailinglists. In the end I had found 3 answers:
+I tried using the exact same code from the standalone C program inside an external. This resulted in an object which needed a 'metro' object to retrieve packets from libpcap. This wasn't very efficient and actually a bad practice. It would work but not reliably. Best approach would be to notify PureData that packets had arrived in libpcap and not ask every tick wether there are packets. So how would I notify PureData of some event? I had this same question for the ZeroMQ external and it had let me into reading lots of code and searching through forums and mailinglists. In the end I had found 3 answers:
 # use PureData's timer, however this would be essentially the same as using a metro object
-# use threading. However this would leave me with creating a communication system between threads.
+# use threading. However this would leave me with designing a communication system between threads which would loop back to the same question.
 # use 'select' polling on file descriptors
+
 I was very happy to find polling filedescriptors available in PureData. It is a very "common practice":http://en.wikipedia.org/wiki/Asynchronous_I/O#Select.28.2Fpoll.29_loops .
 
-I used PureData's networking objects (x_net.c) as a reference to code a similar object for libpcap. See "my other guide":http://www.sphaero.org/blog/ for how I implemented libpcap in a select construction in PureData.
+I found PureData's networking objects (x_net.c) as a good reference to code a similar object for libpcap. See "my other guide":http://www.sphaero.org/blog/ for how I implemented libpcap in a select construction in PureData.
 
-h2. TCP_percept Inner workings
+h2. TCP-percept inner workings
 
 Libpcap would give me all details about every packet it would find in a network interface. However I needed details about where a packet would belong to. As an individual packet would not be informative enough. So I created a TCP session table which would keep track of the connections on the netwerk interface. For this I needed to find the TCP flags of each packet. Using these flags I could reconstruct the session state.
 
@@ -34,8 +35,8 @@ struct tcp_sess {
 This struct would contain individual sessions. These struct instances where put in a hashtable (dictionary) where the name of the session would be the key.
 
 The state identifier would just be a number corresponding to the following states:
+
 <pre>
-/*
  * State table
  * ==============================
  * id : description   : tcp flags
@@ -49,10 +50,35 @@ The state identifier would just be a number corresponding to the following state
  * 6  : terminate req : >FIN
  * 7  : terminate ack : <FIN+ACK
  * 8  : terminated    : >ACK
- */ 
 </pre>
 
-Once I had the hashtable of TCP session I would just pass the sessions to the outlets in PureData. So the 'tcp_percept' object outputs the packet id, state and size.
+The session table would would filled or queried using the following simple logic:
+<pre>
+    struct tcp_sess *sess;
+    // first see if we know this connection
+    HASH_FIND_STR( sess_table, tname, sess);
+    if (sess == NULL )
+    {
+        sess = (struct tcp_sess*)malloc(sizeof(struct tcp_sess));
+        strcpy(sess->name, tname);
+        sess->id = idcounter++;
+        HASH_ADD_STR( sess_table, name, sess );
+    }
+</pre>
+
+This way session we know of would be returned and otherwise a new session would be added to the hashtable.
+
+Once I had the hashtable of TCP sessions I would just pass the sessions to the outlets in PureData. 
+
+<pre>
+    t_atom *ap = (t_atom *)alloca(3 * sizeof(t_atom));
+    SETFLOAT(ap, sess->id);
+    SETFLOAT(ap+1, sess->state);
+    SETFLOAT(ap+2, size_payload);//sess->length);
+    outlet_list(x->x_msg_out, 0, 3, ap)
+</pre>
+
+So the 'tcp_percept' object outputs the packet id, state and size.
 
 <pre>
 [tcp_percept "libpcap filter expression"]
@@ -61,18 +87,22 @@ Once I had the hashtable of TCP session I would just pass the sessions to the ou
 ( id, state, size ) 
 </pre>
 
+h2. Conclusions
+
+Now that I've created several addons for PureData and investigated its inner workings I'm actually confident I can create any addon. The ZeroMQ external is no longer a challenge after this quest. I was very amazed by the simplicity of PureData and found that of inspiring quality. Although programming visually in PureData is a very alien paradigm for computing it works quite well for audio-like setups. Perhaps next challenge would be to replace the UI to something more appealing while being as minimal as is now.
+
 h2. Note about ZeroMQ
 
-I had a lot of trouble getting ZeroMQ to operate within a select construction inside PureData. I gave up because I had to deliver something. Two days before my deadline I was pointed at what my problem was on IRC. I guess I misread the ZeroMQ API about using the API in a regular select call. 
+I ran into trouble getting ZeroMQ to operate within a select construction inside PureData. I gave up because I had to deliver something. Two days before my deadline I was pointed at what my problem was on IRC. I guess I misread the ZeroMQ API about using the API in a regular select call. 
 
-""" The ability to read from the returned file descriptor does not necessarily indicate that messages are available to be read from, or can be 
-written to, the underlying socket; applications must retrieve the actual event state with a subsequent retrieval of the ZMQ_EVENTS option. """
+<pre> The ability to read from the returned file descriptor does not necessarily indicate that messages are available to be read from, or can be 
+written to, the underlying socket; applications must retrieve the actual event state with a subsequent retrieval of the ZMQ_EVENTS option. <pre>
 
 To check for events: 
 
-""" The ZMQ_EVENTS option shall retrieve the event state for the specified socket. The returned value is a bit mask 
-constructed by OR'ing a combination of the following event flags:"""
+<pre> The ZMQ_EVENTS option shall retrieve the event state for the specified socket. The returned value is a bit mask 
+constructed by OR'ing a combination of the following event flags: ZMQ_POLLIN, ZMQ_POLLOUT</pre>
 
-"ref":http://api.zeromq.org/master:zmq-getsockopt#toc20
+"reference":http://api.zeromq.org/master:zmq-getsockopt#toc20
 
 The whole bitmasking thing I missed. :( Which caused my code to block. I'm happy that I know why now. Better late than never.
