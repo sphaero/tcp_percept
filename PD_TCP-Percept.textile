@@ -53,17 +53,18 @@ The state identifier would just be a number corresponding to the following state
 </pre>
 
 The session table would would filled or queried using the following simple logic:
+
 <pre>
-    struct tcp_sess *sess;
-    // first see if we know this connection
-    HASH_FIND_STR( sess_table, tname, sess);
-    if (sess == NULL )
-    {
-        sess = (struct tcp_sess*)malloc(sizeof(struct tcp_sess));
-        strcpy(sess->name, tname);
-        sess->id = idcounter++;
-        HASH_ADD_STR( sess_table, name, sess );
-    }
+struct tcp_sess *sess;
+// first see if we know this connection
+HASH_FIND_STR( sess_table, tname, sess);
+if (sess == NULL )
+{
+    sess = (struct tcp_sess*)malloc(sizeof(struct tcp_sess));
+    strcpy(sess->name, tname);
+    sess->id = idcounter++;
+    HASH_ADD_STR( sess_table, name, sess );
+}
 </pre>
 
 This way session we know of would be returned and otherwise a new session would be added to the hashtable.
@@ -71,11 +72,11 @@ This way session we know of would be returned and otherwise a new session would 
 Once I had the hashtable of TCP sessions I would just pass the sessions to the outlets in PureData. 
 
 <pre>
-    t_atom *ap = (t_atom *)alloca(3 * sizeof(t_atom));
-    SETFLOAT(ap, sess->id);
-    SETFLOAT(ap+1, sess->state);
-    SETFLOAT(ap+2, size_payload);//sess->length);
-    outlet_list(x->x_msg_out, 0, 3, ap)
+t_atom *ap = (t_atom *)alloca(3 * sizeof(t_atom));
+SETFLOAT(ap, sess->id);
+SETFLOAT(ap+1, sess->state);
+SETFLOAT(ap+2, size_payload);//sess->length);
+outlet_list(x->x_msg_out, 0, 3, ap)
 </pre>
 
 So the 'tcp_percept' object outputs the packet id, state and size.
@@ -95,13 +96,17 @@ h2. Note about ZeroMQ
 
 I ran into trouble getting ZeroMQ to operate within a select construction inside PureData. I gave up because I had to deliver something. Two days before my deadline I was pointed at what my problem was on IRC. I guess I misread the ZeroMQ API about using the API in a regular select call. 
 
-<pre> The ability to read from the returned file descriptor does not necessarily indicate that messages are available to be read from, or can be 
-written to, the underlying socket; applications must retrieve the actual event state with a subsequent retrieval of the ZMQ_EVENTS option. <pre>
+<pre> 
+The ability to read from the returned file descriptor does not necessarily indicate that messages are available to be read from, or can be 
+written to, the underlying socket; applications must retrieve the actual event state with a subsequent retrieval of the ZMQ_EVENTS option. 
+</pre>
 
 To check for events: 
 
-<pre> The ZMQ_EVENTS option shall retrieve the event state for the specified socket. The returned value is a bit mask 
-constructed by OR'ing a combination of the following event flags: ZMQ_POLLIN, ZMQ_POLLOUT</pre>
+<pre> 
+The ZMQ_EVENTS option shall retrieve the event state for the specified socket. The returned value is a bit mask 
+constructed by OR'ing a combination of the following event flags: ZMQ_POLLIN, ZMQ_POLLOUT
+</pre>
 
 "reference":http://api.zeromq.org/master:zmq-getsockopt#toc20
 
